@@ -145,7 +145,6 @@ def get_available_models(api_key: str) -> List[str]:
             ):
                 models.append(name)
 
-        # flash 계열을 우선순위로 정렬
         flash_models = sorted([m for m in models if "flash" in m], reverse=True)
         other_models = sorted([m for m in models if "flash" not in m], reverse=True)
         combined = flash_models + other_models
@@ -178,7 +177,6 @@ def extract_handwriting_from_image(
     """
 
     last_error = None
-    # 최대 2바퀴 동안 후보 모델들을 순회하며 503/504 과부하 시 자동 전환
     for round_idx in range(1, 3):
         for model_name in candidate_models:
             try:
@@ -203,7 +201,6 @@ def extract_handwriting_from_image(
             except (errors.ServerError, errors.ClientError) as e:
                 last_error = e
                 err_str = str(e)
-                # 503(과부하), 504(시간초과), 429(한도초과), 404(미지원) 시 다음 모델로 즉시 우회
                 if any(code in err_str for code in ["503", "504", "429", "404"]):
                     if status_box:
                         status_box.warning(
@@ -362,13 +359,19 @@ def create_formatted_excel(df: pd.DataFrame) -> bytes:
 st.set_page_config(page_title="손글씨 식대 장부 엑셀 변환기", layout="wide")
 st.title("📋 손글씨 식대 장부 → 엑셀 정밀 변환기")
 
+# 서버 Secrets 또는 환경 변수에서 API 키 로드
+api_key = os.environ.get("GEMINI_API_KEY", "")
+if not api_key:
+    try:
+        api_key = st.secrets.get("GEMINI_API_KEY", "")
+    except Exception:
+        api_key = ""
+
 with st.sidebar:
     st.header("⚙️ 설정")
-    api_key = st.text_input(
-        "Gemini API Key",
-        type="password",
-        value=os.environ.get("GEMINI_API_KEY", ""),
-    )
+    # Secrets에 키가 설정되어 있으면 입력 칸을 화면에 표시하지 않음
+    if not api_key:
+        api_key = st.text_input("Gemini API Key", type="password")
 
     available_models = get_available_models(api_key)
     model_choice = st.selectbox(
@@ -401,12 +404,14 @@ if uploaded_pdf is not None:
     images = st.session_state.images
     st.success(f"총 **{len(images)}페이지**가 최적화되어 로드되었습니다.")
 
+    if not api_key:
+        st.warning("⚠️ 서버 Secrets에 GEMINI_API_KEY가 설정되지 않았습니다. 왼쪽 사이드바에 API 키를 입력해 주세요.")
+
     if st.button(
         "🔍 손글씨 판독 및 무결성 검증 시작",
         type="primary",
         disabled=not api_key,
     ):
-        # 사용자가 고른 모델을 맨 앞에 두고, 나머지 가용 모델을 백업 후보로 배치
         candidate_models = [model_choice] + [
             m for m in available_models if m != model_choice
         ]
