@@ -157,6 +157,8 @@ def extract_handwriting_from_image(
     api_key: str,
     image: Image.Image,
     candidate_models: List[str],
+    custom_names: str = "",
+    custom_menus: str = "",
     status_box=None,
 ) -> List[dict]:
     client = genai.Client(
@@ -164,16 +166,31 @@ def extract_handwriting_from_image(
         http_options=types.HttpOptions(timeout=120_000),
     )
 
-    prompt = """
+    hint_lines = []
+    if custom_names.strip():
+        hint_lines.append(f"- 자주 나오는 직원 명단: {custom_names.strip()}")
+    if custom_menus.strip():
+        hint_lines.append(f"- 자주 나오는 식당 메뉴: {custom_menus.strip()}")
+
+    hint_section = ""
+    if hint_lines:
+        hint_section = (
+            "\n    [참고 명단 및 주요 메뉴 (흘려 쓴 글씨 판독 시 우선 참고)]\n    "
+            + "\n    ".join(hint_lines)
+            + "\n"
+        )
+
+    prompt = f"""
     첨부된 스캔 이미지의 식대 장부 표를 위에서 아래로 한 행씩 읽어 JSON으로 추출하세요.
     열 순서: 날짜 | 이름 | 조식(메뉴, 금액) | 중식(메뉴, 금액) | 석식(메뉴, 금액)
-
+    {hint_section}
     규칙:
     1. 날짜는 '11/14' 형태로 기록. 빈칸이나 '〃' 표시는 윗줄 날짜를 채움.
-    2. 빈 끼니는 메뉴 "", 금액 0으로 출력.
-    3. 금액은 순수 정수(예: 9500)로 변환. 한 끼 최대 15,000원 이하.
-    4. 글씨가 불확실하면 ai_uncertain=true, uncertain_note에 사유 기재.
-    5. 완전히 비어 있는 빈 행은 제외.
+    2. 이름과 메뉴가 흘려 쓰여 판독이 애매할 경우 위 [참고 명단 및 주요 메뉴]에 비슷한 항목이 있다면 해당 표기로 정확히 보정함. 단, 명단에 없는 새로운 이름이나 메뉴라면 보이는 대로 적되 글씨가 모호할 경우 ai_uncertain=true로 표시함.
+    3. 빈 끼니는 메뉴 "", 금액 0으로 출력.
+    4. 금액은 순수 정수(예: 9500)로 변환. 한 끼 최대 15,000원 이하.
+    5. 글씨가 불확실하면 ai_uncertain=true, uncertain_note에 사유 기재.
+    6. 완전히 비어 있는 빈 행은 제외.
     """
 
     last_error = None
@@ -359,7 +376,6 @@ def create_formatted_excel(df: pd.DataFrame) -> bytes:
 st.set_page_config(page_title="손글씨 식대 장부 엑셀 변환기", layout="wide")
 st.title("📋 손글씨 식대 장부 → 엑셀 정밀 변환기")
 
-# 서버 Secrets 또는 환경 변수에서 API 키 로드
 api_key = os.environ.get("GEMINI_API_KEY", "")
 if not api_key:
     try:
@@ -369,7 +385,6 @@ if not api_key:
 
 with st.sidebar:
     st.header("⚙️ 설정")
-    # Secrets에 키가 설정되어 있으면 입력 칸을 화면에 표시하지 않음
     if not api_key:
         api_key = st.text_input("Gemini API Key", type="password")
 
@@ -379,6 +394,21 @@ with st.sidebar:
         available_models,
         help="선택한 모델이 503 과부하일 경우 목록의 다른 모델로 자동 전환됩니다.",
     )
+
+    with st.expander("📝 인식 보정용 명단·메뉴 수정", expanded=True):
+        custom_names = st.text_area(
+            "자주 나오는 직원 명단 (쉼표 또는 줄바꿈 구분)",
+            value="",
+            placeholder="예: 홍길동, 김철수, 이영희",
+            height=90,
+            help="입·퇴사자가 생기면 이 칸에서 바로 이름을 추가하거나 지우세요.",
+        )
+        custom_menus = st.text_area(
+            "자주 나오는 식당 메뉴",
+            value="순대국, 김치찌개, 된장찌개, 제육볶음, 짜장면, 짬뽕, 백반, 도시락, 한솥, 김밥",
+            height=80,
+            help="자주 시키는 메뉴를 적어두면 흘려 쓴 글씨를 정확히 보정합니다.",
+        )
 
     st.info(
         "**자동 검증 기준**\n"
@@ -422,7 +452,12 @@ if uploaded_pdf is not None:
         for idx, img in enumerate(images):
             status_text.info(f"⏳ {idx + 1} / {len(images)} 페이지 분석 중...")
             page_rows = extract_handwriting_from_image(
-                api_key, img, candidate_models, status_box=status_text
+                api_key,
+                img,
+                candidate_models,
+                custom_names=custom_names,
+                custom_menus=custom_menus,
+                status_box=status_text,
             )
             for r in page_rows:
                 status, reason = validate_row(r)
